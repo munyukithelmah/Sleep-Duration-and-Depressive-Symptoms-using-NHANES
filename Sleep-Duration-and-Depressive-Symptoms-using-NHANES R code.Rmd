@@ -1,0 +1,353 @@
+---
+title: "Sleep Duration and Depressive Symptoms - NHANES"
+author: "Thelma Munyuki"
+date: "2025-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Loading packages and NHANES data
+```{r}
+library(NHANES)
+library(dplyr)
+library(ggplot2)
+library(broom)
+library(knitr)
+library(forcats)
+library(lmtest)
+library(sandwich)
+```
+
+#Loading NHANES data
+```{r}
+data("NHANES")
+```
+
+#Removing duplicate IDs
+```{r}
+nhanes <- NHANES %>%
+  dplyr::distinct(ID, .keep_all = TRUE)
+```
+
+#checiking variable names 
+```{r}
+names(nhanes)
+```
+
+#Creating analytic dataset 
+```{r}
+nh <- nhanes %>%
+  # Adults only
+  filter(Age >= 18) %>%
+  # keeping variables we want 
+  select(ID,
+         SleepHrsNight, SleepTrouble,
+         Depressed, LittleInterest,
+         DaysMentHlthBad,
+         Age, Gender, BMI) %>%
+  # Removing rows with missing key variables
+  filter(!is.na(SleepHrsNight),
+         !is.na(Depressed),
+         !is.na(LittleInterest),
+         !is.na(DaysMentHlthBad),
+         !is.na(Age),
+         !is.na(Gender),
+         !is.na(BMI))
+
+dim(nh)
+summary(nh$SleepHrsNight)
+```
+
+#Sleep category (short vs normal)
+```{r}
+nh <- nh %>%
+  mutate(
+    sleep_cat = case_when(
+      SleepHrsNight <= 6 ~ "short",
+      SleepHrsNight >= 7 & SleepHrsNight <= 9 ~ "normal",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(sleep_cat)) %>%  # droping very long/other sleepers
+  mutate(
+    sleep_cat = factor(sleep_cat,
+                       levels = c("normal", "short")) # normal as reference
+  )
+
+table(nh$sleep_cat)
+```
+
+#Depressive symptoms (binary)
+```{r}
+levels(nh$Depressed)
+levels(nh$LittleInterest)
+```
+#dep-variable
+```{r}
+nh <- nh %>%
+  mutate(
+    dep_any = if_else(
+      Depressed %in% c("Several", "Most") |
+        LittleInterest %in% c("Several", "Most"),
+      1L, 0L
+    ),
+    dep_any = factor(dep_any, levels = c(0, 1),
+                     labels = c("No depression", "Depression"))
+  )
+
+table(nh$dep_any)
+prop.table(table(nh$dep_any))
+```
+
+#Other recodes (gender, sleep trouble, age categories)
+```{r}
+nh <- nh %>%
+  mutate(
+    Gender = fct_drop(Gender),
+    Gender = factor(Gender, levels = c("male", "female")),
+    SleepTrouble = factor(SleepTrouble, levels = c("No", "Yes")),
+    age_cat = case_when(
+      Age < 35 ~ "below35",
+      Age >= 35 & Age <= 65 ~ "35to65",
+      Age > 65 ~ "above65"
+    ),
+    age_cat = factor(age_cat, levels = c("below35", "35to65", "above65"))
+  )
+
+summary(nh$Gender)
+summary(nh$SleepTrouble)
+summary(nh$age_cat)
+```
+
+```{r}
+nh$dep_any   <- relevel(nh$dep_any, ref = "No depression")
+nh$sleep_cat <- relevel(nh$sleep_cat, ref = "normal")
+nh$Gender    <- relevel(nh$Gender, ref = "male")
+```
+
+#Descriptive statistics
+
+#Overall
+```{r}
+nh %>%
+  summarise(
+    n = n(),
+    mean_sleep = mean(SleepHrsNight),
+    sd_sleep   = sd(SleepHrsNight),
+    mean_daysbad = mean(DaysMentHlthBad),
+    sd_daysbad   = sd(DaysMentHlthBad),
+    mean_age  = mean(Age),
+    sd_age    = sd(Age),
+    mean_BMI  = mean(BMI),
+    sd_BMI    = sd(BMI),
+    prop_female = mean(Gender == "female"),
+    prop_dep = mean(dep_any == "Depression")
+  ) %>%
+  kable(digits = 2, caption = "Overall sample characteristics")
+```
+
+#By sleep category
+```{r}
+nh %>%
+  group_by(sleep_cat) %>%
+  summarise(
+    n = n(),
+    mean_sleep = mean(SleepHrsNight),
+    sd_sleep   = sd(SleepHrsNight),
+    mean_daysbad = mean(DaysMentHlthBad),
+    sd_daysbad   = sd(DaysMentHlthBad),
+    mean_age  = mean(Age),
+    sd_age    = sd(Age),
+    mean_BMI  = mean(BMI),
+    sd_BMI    = sd(BMI),
+    prop_female = mean(Gender == "female"),
+    prop_dep = mean(dep_any == "Depression"),
+    prop_trouble = mean(SleepTrouble == "Yes")
+  ) %>%
+  kable(digits = 2, caption = "Characteristics by sleep category")
+```
+#Visualisations 
+
+#Histogram of sleep hours 
+```{r}
+ggplot(nh, aes(x = SleepHrsNight)) +
+  geom_histogram(binwidth = 1, fill = "blue", color = "white", alpha = 0.8) +
+  labs(title = "Distribution of Sleep Duration",
+       x = "Hours of Sleep per Night",
+       y = "Count") +
+  theme_minimal()
+```
+
+#Histogram of mentally unhealthy days
+```{r}
+ggplot(nh, aes(x = DaysMentHlthBad)) +
+  geom_histogram(binwidth = 2, fill = "red", color = "white", alpha = 0.8) +
+  labs(title = "Distribution of Mentally Unhealthy Days",
+       x = "Days Mental Health Was Not Good",
+       y = "Count") +
+  theme_minimal()
+```
+
+# Boxplot of DaysMentHlthBad by sleep category
+```{r}
+ggplot(nh, aes(x = sleep_cat, y = DaysMentHlthBad, fill = sleep_cat)) +
+  geom_boxplot(alpha = 0.8) +
+  scale_fill_manual(values = c("normal" = "green", "short" = "orange")) +
+  labs(title = "Mentally Unhealthy Days by Sleep Category",
+       x = "Sleep Category",
+       y = "Mentally Unhealthy Days") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+# Scatter of sleep vs mentally unhealthy days
+```{r}
+ggplot(nh, aes(x = SleepHrsNight, y = DaysMentHlthBad)) +
+  geom_point(alpha = 0.3, color = "blue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red", size = 1.2) +
+  labs(title = "Relationship Between Sleep Hours and Mentally Unhealthy Days",
+       x = "Sleep Hours per Night",
+       y = "Mentally Unhealthy Days") +
+  theme_minimal()
+```
+
+#Unadjusted hypothesis tests
+
+#Mentally unhealthy days: short vs normal sleepers
+```{r}
+t.test(DaysMentHlthBad ~ sleep_cat, data = nh)
+```
+
+#Sleep hours: depressed vs not depressed
+```{r}
+t.test(SleepHrsNight ~ dep_any, data = nh)
+```
+
+#Sleep category vs depression status: chi-square
+```{r}
+tab_sleep_dep <- table(nh$sleep_cat, nh$dep_any)
+tab_sleep_dep
+chisq.test(tab_sleep_dep)
+prop.table(tab_sleep_dep, 1)
+```
+
+#Logistic regression: depressive symptoms ~ sleep + covariates
+```{r}
+log_model <- glm(dep_any ~ sleep_cat + Age + Gender + BMI + SleepTrouble,
+                 data = nh, family = binomial)
+
+summary(log_model)
+
+log_tidy <- tidy(log_model, exponentiate = TRUE, conf.int = TRUE)
+kable(log_tidy, digits = 3,
+      caption = "Adjusted odds ratios for depressive symptoms")
+```
+
+
+```{r}
+log_model_min <- glm(dep_any ~ sleep_cat,
+                     data = nh, family = binomial)
+
+log_model_full <- glm(dep_any ~ sleep_cat + Age + Gender + BMI + SleepTrouble,
+                      data = nh, family = binomial)
+
+anova(log_model_min, log_model_full, test = "LRT")
+AIC(log_model_min, log_model_full)
+BIC(log_model_min, log_model_full)
+```
+
+
+#Linear regression: mentally unhealthy days ~ sleep hours
+```{r}
+lm_model <- lm(DaysMentHlthBad ~ SleepHrsNight + Age + Gender + BMI + SleepTrouble,
+               data = nh)
+
+summary(lm_model)
+
+lm_tidy <- tidy(lm_model, conf.int = TRUE)
+kable(lm_tidy, digits = 3,
+      caption = "Linear regression: mentally unhealthy days on sleep duration")
+coeftest(lm_model, vcov = vcovHC(lm_model, type = "HC1"))
+```
+
+#Diagnostics for linear model
+```{r}
+par(mfrow = c(2, 2))
+plot(lm_model)
+par(mfrow = c(1, 1))
+```
+
+#Stratified linear regression by gender
+```{r}
+lm_male <- lm(DaysMentHlthBad ~ SleepHrsNight + Age + BMI + SleepTrouble,
+              data = nh[nh$Gender == "male", ])
+
+lm_female <- lm(DaysMentHlthBad ~ SleepHrsNight + Age + BMI + SleepTrouble,
+                data = nh[nh$Gender == "female", ])
+
+tidy(lm_male)[1:2, ]   
+tidy(lm_female)[1:2, ]
+```
+
+#Interaction term SleepHrsNight × Gender
+```{r}
+lm_int <- lm(DaysMentHlthBad ~ SleepHrsNight * Gender + Age + BMI + SleepTrouble,
+             data = nh)
+
+summary(lm_int)
+
+tidy(lm_int, conf.int = TRUE) %>%
+  kable(digits = 3,
+        caption = "Linear regression with Sleep × Gender interaction")
+```
+
+#Tertiles of sleep and ANOVA-style comparison
+```{r}
+nh$sleep_tertile <- dplyr::ntile(nh$SleepHrsNight, 3)
+nh$sleep_tertile_factor <- factor(nh$sleep_tertile,
+                                  labels = c("shortest", "middle", "longest"))
+```
+
+#ANOVA: mentally unhealthy days across tertiles
+```{r}
+anova_sleep <- aov(DaysMentHlthBad ~ sleep_tertile_factor, data = nh)
+summary(anova_sleep)
+
+pairwise.t.test(nh$DaysMentHlthBad, nh$sleep_tertile_factor,
+                p.adjust.method = "bonferroni")
+```
+
+#Relative risk of depression (short vs normal sleep)
+```{r}
+tab_sleep_dep
+
+risk_normal <- tab_sleep_dep["normal", "Depression"] / sum(tab_sleep_dep["normal", ])
+risk_short  <- tab_sleep_dep["short",  "Depression"] / sum(tab_sleep_dep["short", ])
+
+RR_short_vs_normal <- risk_short / risk_normal
+RR_short_vs_normal
+```
+# Adjusted predictions with predict()
+
+#New data frame with typical values
+```{r}
+newdat <- data.frame(
+  SleepHrsNight = c(6, 8),               
+  Age = mean(nh$Age),
+  Gender = factor("female", levels = levels(nh$Gender)),
+  BMI = mean(nh$BMI),
+  SleepTrouble = factor("No", levels = levels(nh$SleepTrouble))
+)
+
+pred_days <- predict(lm_model, newdata = newdat, interval = "confidence")
+cbind(newdat, pred_days)
+```
+
+
+
+
+
+
